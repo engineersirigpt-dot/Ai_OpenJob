@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Class-based dark mode: `dark:` utilities apply when <html> has `.dark`. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --color-brand: #8b5cf6;
   --color-brand-dark: #6d28d9;
@@ -7,5 +10,52 @@
 }
 
 html, body {
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans Thai", sans-serif;
+  font-family: var(--font-sarabun), "TH Sarabun New", "Noto Sans Thai", system-ui, sans-serif;
+}
+
+@keyframes white-rose-bloom {
+  0%, 100% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(-4px) scale(1.02);
+  }
+}
+
+@keyframes white-rose-glow {
+  0%, 100% {
+    box-shadow: 0 0 28px rgba(255, 255, 255, 0.08);
+  }
+  50% {
+    box-shadow: 0 0 38px rgba(255, 255, 255, 0.14);
+  }
+}
+
+/* Sound-wave bars shown while the AI is speaking */
+@keyframes eq-bar {
+  0%, 100% { transform: scaleY(0.3); }
+  50% { transform: scaleY(1); }
+}
+.eq-bar {
+  transform-origin: bottom;
+  animation: eq-bar 0.9s ease-in-out infinite;
+}
+
+/* AI face — periodic eye blink */
+@keyframes ai-blink {
+  0%, 90%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(0.1); }
+}
+.ai-eye {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: ai-blink 4.5s ease-in-out infinite;
+}
+
+.white-rose-bloom {
+  animation: white-rose-bloom 5s ease-in-out infinite;
+}
+
+.white-rose-glow {
+  animation: white-rose-glow 5s ease-in-out infinite;
 }

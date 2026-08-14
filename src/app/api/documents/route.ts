@@ -1,17 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import fs from "fs/promises";
 import path from "path";
-import { randomUUID } from "crypto";
-import { extractTextFromFile } from "@/lib/document-parser";
-import { addDocument, listDocuments, removeDocument } from "@/lib/document-store";
+import { extractTextFromBuffer } from "@/lib/document-parser";
+import { addDocument, listDocuments, removeDocument, clearDocuments } from "@/lib/document-store";
+import { digestWiDocument } from "@/lib/digest";
 
 export const maxDuration = 60;
-
-const UPLOAD_DIR = path.join(process.cwd(), "uploads");
-
-async function ensureUploadDir() {
-  await fs.mkdir(UPLOAD_DIR, { recursive: true });
-}
 
 // GET — list all documents
 export async function GET() {
@@ -26,11 +19,9 @@ export async function GET() {
   );
 }
 
-// POST — upload a document
+// POST — upload a document (parsed in-memory, no file left on disk)
 export async function POST(req: NextRequest) {
   try {
-    await ensureUploadDir();
-
     const form = await req.formData();
     const file = form.get("file");
     if (!file || !(file instanceof File)) {
@@ -46,14 +37,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const fileId = randomUUID();
-    const savePath = path.join(UPLOAD_DIR, `${fileId}${ext}`);
     const buffer = Buffer.from(await file.arrayBuffer());
-    await fs.writeFile(savePath, buffer);
 
     let content = "";
     try {
-      content = await extractTextFromFile(savePath);
+      content = await extractTextFromBuffer(buffer, ext);
     } catch (err) {
       console.error("[doc-parse-err]", err);
       return NextResponse.json(
@@ -69,7 +57,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const doc = addDocument(file.name, content);
+    const summary = await digestWiDocument(file.name, content);
+    const doc = addDocument(file.name, content, summary);
     return NextResponse.json({
       id: doc.id,
       name: doc.name,
@@ -85,11 +74,12 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// DELETE — remove a document
+// DELETE — remove one document (?id=), or clear ALL when no id is given
 export async function DELETE(req: NextRequest) {
   const id = req.nextUrl.searchParams.get("id");
   if (!id) {
-    return NextResponse.json({ error: "missing id" }, { status: 400 });
+    clearDocuments();
+    return NextResponse.json({ ok: true, cleared: "all" });
   }
   const removed = removeDocument(id);
   return NextResponse.json({ ok: removed });

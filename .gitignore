@@ -4,4 +4,22 @@ node_modules/
 .env.local
 *.log
 uploads/
+data/
 .DS_Store
+
+# build/tool artifacts
+tsconfig.tsbuildinfo
+*.tgz
+.claude/
+memory/
+
+# local-only / unrelated assets
+AI_01.mp4
+public/AI_01.mp4
+Image_por/
+Note555_repo/
+images_cutout_test.png
+images_rose_cutout.png
+
+# python service venv (server-side install)
+typhoon-asr-service/venv/

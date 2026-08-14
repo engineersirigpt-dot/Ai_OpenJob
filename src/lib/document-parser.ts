@@ -1,12 +1,18 @@
 import fs from "fs/promises";
 import path from "path";
 
-export async function extractTextFromFile(filePath: string): Promise<string> {
-  const ext = path.extname(filePath).toLowerCase();
+/**
+ * Extract plain text from a document buffer.
+ * Shared by file uploads and remote (REPORT2 WI PDF) fetches.
+ */
+export async function extractTextFromBuffer(
+  buffer: Buffer,
+  ext: string,
+): Promise<string> {
+  const e = ext.toLowerCase();
 
-  if (ext === ".pdf") {
+  if (e === ".pdf") {
     const { PDFParse } = await import("pdf-parse");
-    const buffer = await fs.readFile(filePath);
     const parser = new PDFParse({ data: new Uint8Array(buffer) });
     try {
       const result = await parser.getText();
@@ -16,16 +22,21 @@ export async function extractTextFromFile(filePath: string): Promise<string> {
     }
   }
 
-  if (ext === ".docx") {
+  if (e === ".docx") {
     const mammoth = await import("mammoth");
-    const buffer = await fs.readFile(filePath);
     const result = await mammoth.extractRawText({ buffer });
     return result.value || "";
   }
 
-  if (ext === ".txt" || ext === ".md") {
-    return await fs.readFile(filePath, "utf-8");
+  if (e === ".txt" || e === ".md") {
+    return buffer.toString("utf-8");
   }
 
   throw new Error(`ไม่รองรับไฟล์ประเภท ${ext} — รองรับเฉพาะ .pdf, .docx, .txt, .md`);
+}
+
+export async function extractTextFromFile(filePath: string): Promise<string> {
+  const ext = path.extname(filePath).toLowerCase();
+  const buffer = await fs.readFile(filePath);
+  return extractTextFromBuffer(buffer, ext);
 }
