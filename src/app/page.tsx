@@ -900,8 +900,15 @@ export default function MeetingPage() {
             />
           </div>
 
-          {/* AI indicator — lightweight (no video) */}
-          <AiAvatar speaking={isAiResponding} stream={remoteStream} />
+          {/* AI face — reacts both when it speaks and while it sits listening */}
+          <AiAvatar
+            speaking={isAiResponding}
+            stream={remoteStream}
+            listening={isListening}
+            micEnabled={micEnabled}
+            micStream={localStream}
+            thinking={transcribing}
+          />
 
           {/* Reference documents the AI is using (shown during the meeting) */}
           {(isListening || state === "connecting") && documents.length > 0 && (
