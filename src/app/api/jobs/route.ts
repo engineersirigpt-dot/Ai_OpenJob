@@ -1,15 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchJobOkList } from "@/lib/report2";
+import { fetchJobOkList, parseReport2DateTime } from "@/lib/report2";
 
 export const maxDuration = 30;
 
-/**
- * POST /api/jobs
- * Proxy the REPORT2 "รายการรอ OK งาน" list so the browser doesn't hit the
- * legacy server directly (avoids CORS / mixed-content).
- *
- * Body: { jobId?: string, dateStart?: "YYYY-MM-DD", dateEnd?: "YYYY-MM-DD" }
- */
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
@@ -29,6 +22,11 @@ export async function POST(req: NextRequest) {
         // Already discussed in an earlier session (the "Confirm" column in
         // REPORT2) — used to hide morning jobs from the afternoon meeting.
         confirmed: Number(j.is_confirm) === 1,
+        // When the room pressed confirm, and what was typed next to it. The
+        // meeting room uses the time as the line between one job's talk and
+        // the next's (see page.tsx, confirm marks).
+        confirmedAt: parseReport2DateTime((j as unknown as { confirm_date?: string }).confirm_date),
+        remark: String(j.detail || "").trim(),
         attendees: Number(j.count_emp_meeting) || 0,
       })),
     );

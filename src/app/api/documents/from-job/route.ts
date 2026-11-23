@@ -3,6 +3,7 @@ import { extractTextFromBuffer } from "@/lib/document-parser";
 import { addDocument, listDocuments } from "@/lib/document-store";
 import { digestWiDocument } from "@/lib/digest";
 import { fetchWiPdf, JOB_ID_RE } from "@/lib/report2";
+import { carParBlockForJob } from "@/lib/car-par";
 
 export const maxDuration = 60;
 
@@ -75,7 +76,17 @@ export async function POST(req: NextRequest) {
 
     // Distill the WI into a compact digest now (at pull time) so the realtime
     // session can load it cheaply. Best-effort — empty digest is fine.
-    const summary = await digestWiDocument(name, content);
+    // The WI's last page lists the customer's CAR history; the company's
+    // CAR/PAR table has the fuller record and the PARs the WI never shows.
+    // Both are fetched together, and the block goes into the full text and
+    // the digest alike, so พรชัย in the room and the minutes writer after
+    // it read the same warning.
+    const [summaryOnly, carPar] = await Promise.all([digestWiDocument(name, content), carParBlockForJob(jobId)]);
+    const summary = carPar ? `${summaryOnly}
+${carPar}` : summaryOnly;
+    if (carPar) content = `${content}
+
+${carPar}`;
     const doc = addDocument(name, content, summary);
     return NextResponse.json({
       id: doc.id,

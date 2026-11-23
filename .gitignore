@@ -14,6 +14,7 @@ tsconfig.tsbuildinfo
 memory/
 
 # local-only / unrelated assets
+*.docx
 AI_01.mp4
 public/AI_01.mp4
 Image_por/
@@ -23,3 +24,9 @@ images_rose_cutout.png
 
 # python service venv (server-side install)
 typhoon-asr-service/venv/
+
+# recordings / spreadsheets / duplicate exports dropped in the project root
+*.webm
+*.xlsx
+public/* (2).png
+public/*(2).png

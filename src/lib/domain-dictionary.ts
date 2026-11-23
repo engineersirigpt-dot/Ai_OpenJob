@@ -34,6 +34,37 @@ export const DOMAIN_RULES: DomainRule[] = [
   { id: "offset-th", pattern: /ออฟ\s*เซ็?[ทต]/gu, replacement: " offset " },
   { id: "emboss-th", pattern: /เอ็ม\s*บอส/gu, replacement: " emboss " },
   { id: "cmyk-th", pattern: /ซี\s*เอ็ม\s*ไว\s*เค/gu, replacement: " CMYK " },
+  { id: "opp-th", pattern: /โอ\s*พี\s*พี/gu, replacement: " OPP " },
+  { id: "plate-th", pattern: /เพล[ทต](?![ก-ฮ])/gu, replacement: " plate " },
+  { id: "artwork-th", pattern: /อาร์[ตท]\s*เวิร์?[คก]/gu, replacement: " artwork " },
+  { id: "reprint-th", pattern: /รี\s*ปริ้?น[ทต]?์?/gu, replacement: " reprint " },
+
+  // --- CAR (the word is said constantly; "คา" alone is a normal Thai word,
+  //     so only convert it where the context makes it unambiguous) ---
+  { id: "car-issue-th", pattern: /ออก\s*คา(?![ก-ฮ]|ง)/gu, replacement: "ออก CAR " },
+  { id: "car-answer-th", pattern: /ตอบ\s*คา(?![ก-ฮ]|ง)/gu, replacement: "ตอบ CAR " },
+  { id: "car-sheet-th", pattern: /ใบ\s*คา(?![ก-ฮ]|ง)/gu, replacement: "ใบ CAR " },
+  { id: "car-order-th", pattern: /คา\s*(?=ลำดับ|ลําดับ)/gu, replacement: " CAR " },
+  { id: "car-investigate-th", pattern: /สอบสวน\s*คา(?![ก-ฮ]|ง)/gu, replacement: "สอบสวน CAR " },
+  { id: "ncr-th", pattern: /เอ็น\s*ซี\s*อาร์/gu, replacement: " NCR " },
+
+  // --- aspirated/unaspirated slips the recording makes on Thai ---
+  // "ทอด" (to fry) is never said about audio; "ถอดเสียง" is said constantly.
+  { id: "transcribe-th", pattern: /ทอด(?=เสียง)/gu, replacement: "ถอด" },
+
+  // --- production planning / systems vocabulary heard in these meetings ---
+  { id: "layout-th", pattern: /เลย์\s*เอ้?า[ตท]์?/gu, replacement: " layout " },
+  { id: "capacity-th", pattern: /แคป\s*(?:ปา)?\s*ซิ\s*ตี้?/gu, replacement: " capacity " },
+  { id: "dashboard-th", pattern: /แดช\s*บอร์?ด/gu, replacement: " dashboard " },
+  { id: "downtime-th", pattern: /ดาวน์\s*ไทม์?/gu, replacement: " downtime " },
+  { id: "spec-th", pattern: /สเป็?[คก](?![ก-ฮ])/gu, replacement: " spec " },
+  { id: "order-th", pattern: /ออ\s*เดอร์?/gu, replacement: " order " },
+  { id: "stock-th", pattern: /สต็?อ[คก](?![ก-ฮ])/gu, replacement: " stock " },
+  { id: "job-th", pattern: /จ[\u0e47\u0e4a]อบ(?![ก-ฮ])/gu, replacement: " job " },
+  { id: "size-th", pattern: /ไซ[สซ]์/gu, replacement: " size " },
+  { id: "erp-th", pattern: /อี\s*อาร์\s*พี/gu, replacement: " ERP " },
+  { id: "kpi-th", pattern: /เค\s*พี\s*ไอ/gu, replacement: " KPI " },
+  { id: "ifu-th", pattern: /ไอ\s*เอฟ\s*ยู/gu, replacement: " IFU " },
 ];
 
 // ---------------------------------------------------------------------------

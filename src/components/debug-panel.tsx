@@ -22,7 +22,7 @@ interface DebugPanelProps {
 }
 
 function dot(ok: boolean) {
-  return ok ? "🟢" : "🔴";
+  return ok ? "ปกติ" : "ขัดข้อง";
 }
 
 export function DebugPanel({
@@ -44,7 +44,7 @@ export function DebugPanel({
   return (
     <div className="fixed bottom-3 right-3 z-[70] w-[440px] max-w-[92vw] max-h-[80vh] flex flex-col rounded-xl border border-emerald-500/40 bg-black/90 backdrop-blur text-emerald-200 shadow-2xl font-mono text-[13px]">
       <div className="flex items-center justify-between border-b border-emerald-500/30 px-3 py-2">
-        <span className="font-bold text-emerald-700">🐛 DEBUG</span>
+        <span className="font-bold text-emerald-700">DEBUG</span>
         <button type="button" onClick={onClose} className="text-emerald-600 hover:text-emerald-200">
           <X className="h-4 w-4" />
         </button>
@@ -55,7 +55,7 @@ export function DebugPanel({
         <div>{dot(connOk)} การเชื่อมต่อ: <b>{connectionState}</b></div>
         <div>{dot(dataChannelReady)} ช่องข้อมูล: <b>{dataChannelReady ? "พร้อม" : "ไม่พร้อม"}</b></div>
         <div>AI กำลังพูด: <b>{isAiResponding ? "ใช่" : "ไม่"}</b> · ไมค์: <b>{micEnabled ? "เปิด" : "พัก"}</b> · เทิร์น: <b>{turns}</b></div>
-        {error && <div className="text-rose-600">⚠ {error}</div>}
+        {error && <div className="text-rose-600">{error}</div>}
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 py-2">

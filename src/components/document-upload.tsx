@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { Upload, FileText, X, Loader2, Trash2 } from "lucide-react";
+import { Upload, FileText, X, Loader2, Trash2, Link2 } from "lucide-react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 
 interface DocumentInfo {
@@ -22,6 +22,8 @@ interface DocumentUploadProps {
 export function DocumentUpload({ documents, onChange, onClearAll, disabled }: DocumentUploadProps) {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
+  const [chatLink, setChatLink] = useState("");
+  const [fetchingLink, setFetchingLink] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Pending delete confirmation: clear-all or a single file
   const [confirm, setConfirm] = useState<{ type: "all" } | { type: "one"; id: string; name: string } | null>(null);
@@ -46,6 +48,40 @@ export function DocumentUpload({ documents, onChange, onClearAll, disabled }: Do
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  // Read a ChatGPT share link → plain text → upload through the normal
+  // document pipeline so it behaves like any attached file.
+  async function handleFetchChatLink() {
+    const url = chatLink.trim();
+    if (!url) return;
+    setError("");
+    setFetchingLink(true);
+    try {
+      const res = await fetch("/api/chat-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error || "อ่านลิงก์ไม่สำเร็จ");
+        return;
+      }
+      const file = new File([data.text], `${data.name}.txt`, { type: "text/plain" });
+      const fd = new FormData();
+      fd.append("file", file);
+      const up = await fetch("/api/documents", { method: "POST", body: fd });
+      if (!up.ok) {
+        const d = await up.json().catch(() => ({}));
+        setError(d.error || "บันทึกแชทเป็นเอกสารล้มเหลว");
+        return;
+      }
+      onChange([...documents, await up.json()]);
+      setChatLink("");
+    } finally {
+      setFetchingLink(false);
     }
   }
 
@@ -109,7 +145,7 @@ export function DocumentUpload({ documents, onChange, onClearAll, disabled }: Do
             ref={fileInputRef}
             type="file"
             multiple
-            accept=".pdf,.docx,.txt,.md"
+            accept=".pdf,.docx,.xlsx,.xls,.txt,.md,.csv"
             onChange={(e) => handleFiles(e.target.files)}
             className="hidden"
           />
@@ -124,8 +160,34 @@ export function DocumentUpload({ documents, onChange, onClearAll, disabled }: Do
             ) : (
               <Upload className="h-4 w-4" />
             )}
-            {uploading ? "กำลังอัปโหลด..." : "เพิ่มเอกสาร (PDF/DOCX/TXT)"}
+            {uploading ? "กำลังอัปโหลด..." : "เพิ่มเอกสาร (PDF/DOCX/XLSX/TXT)"}
           </button>
+
+          {/* ChatGPT share link → text document */}
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={chatLink}
+              onChange={(e) => setChatLink(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleFetchChatLink();
+                }
+              }}
+              placeholder="หรือวางลิงก์แชท ChatGPT (chatgpt.com/share/...)"
+              className="flex-1 px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs text-slate-900 dark:text-slate-100 focus:outline-none focus:border-purple-500/50"
+            />
+            <button
+              type="button"
+              onClick={handleFetchChatLink}
+              disabled={fetchingLink || !chatLink.trim()}
+              className="flex items-center justify-center gap-1.5 rounded-lg border border-purple-500/40 bg-purple-500/10 hover:bg-purple-500/20 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-2 text-xs font-semibold text-purple-700 dark:text-purple-200 shrink-0"
+            >
+              {fetchingLink ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Link2 className="h-3.5 w-3.5" />}
+              {fetchingLink ? "กำลังอ่าน..." : "ดึงแชท"}
+            </button>
+          </div>
         </>
       )}
 

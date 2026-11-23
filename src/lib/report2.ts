@@ -118,3 +118,20 @@ export async function fetchWiPdf(
   }
   return null;
 }
+
+const MONTHS: Record<string, number> = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+
+/**
+ * REPORT2 writes the confirm time the way SQL Server prints a datetime —
+ * "Sep 1 2026  2:05PM": two spaces, 12-hour clock, Bangkok wall time, no
+ * zone. This turns it into an ISO instant (UTC+7) so the browser can
+ * compare it with its own clock. null when the shape is anything else.
+ */
+export function parseReport2DateTime(s: unknown): string | null {
+  const m = /^(\w{3})\s+(\d{1,2})\s+(\d{4})\s+(\d{1,2}):(\d{2})(AM|PM)$/.exec(String(s ?? "").trim());
+  if (!m || !(m[1] in MONTHS)) return null;
+  let h = Number(m[4]) % 12;
+  if (m[6] === "PM") h += 12;
+  const utc = Date.UTC(Number(m[3]), MONTHS[m[1]], Number(m[2]), h - 7, Number(m[5]));
+  return new Date(utc).toISOString();
+}

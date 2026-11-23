@@ -1,6 +1,33 @@
 "use client";
 
 import { useCallback, useRef } from "react";
+import { SPEECH_START_RMS, SPEECH_KEEP_RMS, MIC_GAIN, dbfs } from "@/lib/mic-gain";
+import { LiveTranscribeClient } from "@/lib/live-transcribe-client";
+
+/**
+ * Two lanes feed the live transcript.
+ *
+ * "ws" streams the room to gpt-live-transcribe over a Realtime socket and
+ * the words appear while they are being said; the gate below only decides
+ * when to close a segment (a pause, or ten seconds). "rest" is the older
+ * path — cut a slice at the pause, POST it, wait — and is what the hook
+ * falls back to when the socket cannot be opened or drops: the room never
+ * loses its transcript to a network problem, it just gets it a little
+ * later. Questions to พรชัย always use "rest": they are short, and the
+ * answer needs the whole question at once.
+ */
+type Lane = "ws" | "rest";
+/**
+ * Keep streaming this long after the last frame above the gate, so the tail
+ * of a sentence is not cut. Short on purpose: the first streamed meeting
+ * came back as "ครับ ค่ะ ครับ ครับ โอเค ครับ ค่ะ ค่ะ ค่ะ" — a Thai speech model
+ * handed near-silence answers with the commonest Thai words it knows, and
+ * 1.5 s of room tone after every sentence was a lot of near-silence. 0.7 s
+ * covers a trailing syllable and little else.
+ */
+const STREAM_HANGOVER_MS = 700;
+/** How long to wait before trying the socket again after it dropped. */
+const RECONNECT_MS = 3000;
 
 /**
  * Captures the microphone as raw PCM and transcribes it via /api/transcribe
@@ -23,10 +50,26 @@ const FRAME = 4096;
 // single threshold silently DROPPED quiet utterances. Speech "starts" above
 // START and keeps counting while above KEEP — quiet syllable tails no longer
 // flip the detector into silence mid-sentence.
-const SPEECH_START_RMS = 0.01;
-const SPEECH_KEEP_RMS = 0.006;
+/**
+ * How loud a frame must be to count as speech.
+ *
+ * The right value depends entirely on the microphone and how far people sit
+ * from it, which no amount of reading the code can settle — a conference mic
+ * in the middle of the table and a laptop lid at one end of it are two
+ * different worlds. Both are tunable without touching the code, and the gate
+ * reports what it actually measured (see below) so the number can be chosen
+ * from the room rather than guessed.
+ */
+// The thresholds live in mic-gain.ts, next to the gain they are scaled by.
+// Measured against two real meetings: speech frames sat between 0.015 and
+// 0.03 and the room's quiet floor at 0.0009, so a gate at 0.01 let only 8%
+// of frames through while 0.004 passes 18-21% — the quiet half of the
+// talking. Those are pre-gain numbers; the gate now listens after the gain
+// stage, which is why the scaling is not optional.
+/** How often the gate reports what it is hearing, in milliseconds. */
+const LEVEL_REPORT_MS = 30_000;
 const SILENCE_CUT_MS = 700; // pause this long after speech → end of sentence
-const MAX_SEGMENT_MS = 12000; // don't let one segment grow forever
+const MAX_SEGMENT_MS = 10000; // a slice reaches the screen every 10s at the latest
 const MIN_SPEECH_MS = 400; // ignore blips (a cough, a chair moving)
 const PREROLL_MS = 300; // keep a little audio before speech starts
 
@@ -115,6 +158,18 @@ function encodeWav(samples: Float32Array, sampleRate: number): Blob {
 
 export function useTranscriber() {
   const ctxRef = useRef<AudioContext | null>(null);
+  /**
+   * The room's own noise, learned as the quietest frames heard recently.
+   *
+   * The configured thresholds assume a quiet room. On 29 Oct the laptop mic
+   * sat at -28 dBFS of fan and hum, 8 dB above the start threshold, and
+   * every one of 352 frames in every window "passed" — the gate was sending
+   * the fan to be transcribed, and the model answered with nothing. So the
+   * gate also keeps a floor and refuses anything that is not clearly above
+   * it. The floor drops at once and rises slowly: a pause pulls it down,
+   * a long stretch of talking does not pull it up to the voices.
+   */
+  const floorRef = useRef(0);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const sinkRef = useRef<GainNode | null>(null);
@@ -123,6 +178,12 @@ export function useTranscriber() {
   const chunkSamplesRef = useRef(0);
   const speechMsRef = useRef(0);
   const silenceMsRef = useRef(0);
+  // Running figures for the gate's level report.
+  const levelPeakRef = useRef(0);
+  const levelSumRef = useRef(0);
+  const levelFramesRef = useRef(0);
+  const levelAboveRef = useRef(0);
+  const levelReportedRef = useRef(0);
   const speakingNowRef = useRef(false); // hysteresis state for the two thresholds
   const modeRef = useRef<Mode>("idle");
   const pausedRef = useRef(false);
@@ -132,12 +193,35 @@ export function useTranscriber() {
   const onBusyRef = useRef<((b: boolean) => void) | null>(null);
   const inflightRef = useRef(0);
 
+  // The streaming lane (see Lane above).
+  const laneRef = useRef<Lane>("rest");
+  const liveRef = useRef<LiveTranscribeClient | null>(null);
+  const onPartialRef = useRef<((text: string) => void) | null>(null);
+  const lastSpeechAtRef = useRef(0);
+  const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Live question preview: re-transcribe the growing utterance while speaking.
+  const onQuestionPartialRef = useRef<((text: string) => void) | null>(null);
+  const partialBusyRef = useRef(false);
+  const lastPartialSamplesRef = useRef(0);
+
   const resetBuffer = useCallback(() => {
     chunksRef.current = [];
     chunkSamplesRef.current = 0;
     speechMsRef.current = 0;
     silenceMsRef.current = 0;
     speakingNowRef.current = false;
+  }, []);
+
+  /** Merge the buffer WITHOUT consuming it (for live previews). */
+  const snapshotBuffer = useCallback((): Float32Array => {
+    const merged = new Float32Array(chunkSamplesRef.current);
+    let offset = 0;
+    for (const chunk of chunksRef.current) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return merged;
   }, []);
 
   const takeBuffer = useCallback((): Float32Array => {
@@ -203,8 +287,43 @@ export function useTranscriber() {
       chunksRef.current.push(new Float32Array(input));
       chunkSamplesRef.current += input.length;
 
-      // Hysteresis: enter "speaking" above START, stay in it above KEEP.
-      const threshold = speakingNowRef.current ? SPEECH_KEEP_RMS : SPEECH_START_RMS;
+      // What the gate is hearing, reported every half-minute. If the room is
+      // talking and `above` stays at 0, the threshold is above the room and
+      // speech is being dropped before it is ever sent anywhere.
+      levelPeakRef.current = Math.max(levelPeakRef.current, rms);
+      levelSumRef.current += rms;
+      levelFramesRef.current += 1;
+      if (rms > Math.max(SPEECH_START_RMS, floorRef.current * 3)) levelAboveRef.current += 1;
+      const now = Date.now();
+      if (now - levelReportedRef.current >= LEVEL_REPORT_MS) {
+        levelReportedRef.current = now;
+        const frames = levelFramesRef.current || 1;
+        console.log(
+          `[stt-gate] ระดับเสียง 30 วิ: สูงสุด ${levelPeakRef.current.toFixed(4)} ` +
+            `(${dbfs(levelPeakRef.current)} dBFS) ` +
+            `เฉลี่ย ${(levelSumRef.current / frames).toFixed(4)} ` +
+            `(${dbfs(levelSumRef.current / frames)} dBFS) ` +
+            `ผ่านเกณฑ์ ${levelAboveRef.current}/${frames} เฟรม ` +
+            `(เกณฑ์ ${Math.max(SPEECH_START_RMS, floorRef.current * 3).toFixed(4)} ` +
+            `พื้นห้อง ${floorRef.current.toFixed(4)} (${dbfs(floorRef.current)} dBFS) ขยาย x${MIC_GAIN}) ` +
+            `ช่องทาง ${laneRef.current === "ws" ? "สตรีม" : "ส่งเป็นชิ้น"}`,
+        );
+        levelPeakRef.current = 0;
+        levelSumRef.current = 0;
+        levelFramesRef.current = 0;
+        levelAboveRef.current = 0;
+      }
+
+      // Learn the floor: snap down, creep up (about 1 dB per second at 85 ms frames).
+      const floor = floorRef.current;
+      floorRef.current = floor === 0 || rms < floor ? rms : Math.min(rms, floor * 1.01);
+
+      // Hysteresis: enter "speaking" above START, stay in it above KEEP —
+      // and in a noisy room, above the floor by 3x (9.5 dB) to start and
+      // 2x (6 dB) to keep, whichever is higher.
+      const threshold = speakingNowRef.current
+        ? Math.max(SPEECH_KEEP_RMS, floorRef.current * 2)
+        : Math.max(SPEECH_START_RMS, floorRef.current * 3);
       if (rms > threshold) {
         speakingNowRef.current = true;
         speechMsRef.current += frameMs;
@@ -215,7 +334,51 @@ export function useTranscriber() {
       }
 
       // A question is recorded until the caller stops it — never auto-cut.
-      if (modeRef.current === "question") return;
+      if (modeRef.current === "question") {
+        // Live preview: after ~1s of new audio, re-transcribe the whole
+        // utterance so the caller can render the sentence as it grows.
+        const newSamples = chunkSamplesRef.current - lastPartialSamplesRef.current;
+        if (
+          onQuestionPartialRef.current &&
+          !partialBusyRef.current &&
+          speechMsRef.current >= MIN_SPEECH_MS &&
+          newSamples >= sampleRateRef.current
+        ) {
+          partialBusyRef.current = true;
+          lastPartialSamplesRef.current = chunkSamplesRef.current;
+          send(snapshotBuffer())
+            .then((seg) => {
+              if (seg && modeRef.current === "question") onQuestionPartialRef.current?.(seg.text);
+            })
+            .finally(() => {
+              partialBusyRef.current = false;
+            });
+        }
+        return;
+      }
+
+      // Streaming lane: the audio goes out as it comes in; nothing is
+      // buffered here. The gate's counters still decide when a segment is
+      // closed, the same way they decide when a slice is cut below.
+      const live = liveRef.current;
+      if (laneRef.current === "ws" && live?.ready) {
+        chunksRef.current = [];
+        chunkSamplesRef.current = 0;
+        const now2 = Date.now();
+        if (speakingNowRef.current) lastSpeechAtRef.current = now2;
+        if (speakingNowRef.current || now2 - lastSpeechAtRef.current < STREAM_HANGOVER_MS) {
+          live.send(input, sampleRateRef.current);
+        }
+        const sentenceDone = speechMsRef.current >= MIN_SPEECH_MS && silenceMsRef.current >= SILENCE_CUT_MS;
+        const longEnough = speechMsRef.current >= MAX_SEGMENT_MS;
+        if (sentenceDone || longEnough) {
+          live.commit();
+          onBusyRef.current?.(true);
+          speechMsRef.current = 0;
+          silenceMsRef.current = 0;
+        }
+        return;
+      }
 
       const bufferedMs = (chunkSamplesRef.current / sampleRateRef.current) * 1000;
 
@@ -238,12 +401,88 @@ export function useTranscriber() {
         }
       }
     },
-    [flushMeeting, resetBuffer],
+    [flushMeeting, resetBuffer, send, snapshotBuffer],
   );
 
+  /**
+   * A finished streamed segment, cleaned the way the server cleans a slice
+   * (/api/clean-transcript: prompt echo cut, loops and foreign text dropped,
+   * print terms spelled by the dictionary). The dictionary lives on the
+   * server, so the browser asks rather than imports. If that call fails the
+   * raw text still reaches the screen — a sentence with "สปอตยูวี" spelled
+   * by ear beats a sentence lost.
+   */
+  const deliverStreamed = useCallback(async (raw: string) => {
+    const fallback = raw.replace(/\s+/g, " ").trim();
+    if (!fallback) return;
+    try {
+      const res = await fetch("/api/clean-transcript", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: fallback }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { text?: string; contextText?: string; dropped?: string };
+        if (!data.text) {
+          if (data.dropped) console.log(`[live-stt] ทิ้งช่วง: ${data.dropped}`);
+          return;
+        }
+        onTextRef.current?.({ text: data.text, contextText: data.contextText || data.text, decision: "accept" });
+        return;
+      }
+    } catch {
+      // local server unreachable for a moment: fall through
+    }
+    onTextRef.current?.({ text: fallback, contextText: fallback, decision: "accept" });
+  }, []);
+
+  /** Open the streaming lane; on any failure the hook keeps the slice lane. */
+  const openLiveLane = useCallback(() => {
+    if (liveRef.current || modeRef.current === "idle") return;
+    const client = new LiveTranscribeClient({
+      onPartial: (t) => onPartialRef.current?.(t),
+      onSegment: (t) => {
+        void deliverStreamed(t).finally(() => {
+          if (!client.busy) onBusyRef.current?.(false);
+        });
+      },
+      onClosed: (reason) => {
+        console.warn(`[live-stt] สตรีมหลุด (${reason}) — กลับไปส่งเป็นชิ้นจนกว่าจะต่อใหม่ได้`);
+        if (liveRef.current === client) liveRef.current = null;
+        laneRef.current = "rest";
+        onPartialRef.current?.("");
+        if (modeRef.current !== "idle") {
+          reconnectRef.current = setTimeout(() => openLiveLane(), RECONNECT_MS);
+        }
+      },
+    });
+    client
+      .open()
+      .then(({ model }) => {
+        if (modeRef.current === "idle") {
+          client.close();
+          return;
+        }
+        liveRef.current = client;
+        laneRef.current = "ws";
+        resetBuffer();
+        console.log(`[live-stt] ถอดสดแบบสตรีมด้วย ${model}`);
+      })
+      .catch((err) => {
+        console.warn(`[live-stt] เปิดสตรีมไม่ได้ (${(err as Error).message}) — ใช้การส่งเป็นชิ้นแทน`);
+        laneRef.current = "rest";
+      });
+  }, [deliverStreamed, resetBuffer]);
+
   const start = useCallback(
-    (stream: MediaStream, onText: (seg: TranscribedSegment) => void, onBusy?: (b: boolean) => void) => {
+    (
+      stream: MediaStream,
+      onText: (seg: TranscribedSegment) => void,
+      onBusy?: (b: boolean) => void,
+      onPartial?: (text: string) => void,
+    ) => {
       if (ctxRef.current) return;
+      onPartialRef.current = onPartial ?? null;
       const AC: typeof AudioContext =
         window.AudioContext ||
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -271,12 +510,19 @@ export function useTranscriber() {
       resetBuffer();
       modeRef.current = "meeting";
       ctx.resume?.().catch(() => {});
+      openLiveLane();
     },
-    [handleAudio, resetBuffer],
+    [handleAudio, resetBuffer, openLiveLane],
   );
 
   const stop = useCallback(() => {
     modeRef.current = "idle";
+    if (reconnectRef.current) clearTimeout(reconnectRef.current);
+    reconnectRef.current = null;
+    liveRef.current?.close();
+    liveRef.current = null;
+    laneRef.current = "rest";
+    onPartialRef.current?.("");
     resetBuffer();
     if (processorRef.current) processorRef.current.onaudioprocess = null;
     processorRef.current?.disconnect();
@@ -294,19 +540,30 @@ export function useTranscriber() {
   const setPaused = useCallback(
     (paused: boolean) => {
       pausedRef.current = paused;
-      if (paused) resetBuffer();
+      if (paused) {
+        // finish the sentence in flight before the room goes quiet for พรชัย
+        if (liveRef.current?.ready && speechMsRef.current >= MIN_SPEECH_MS) liveRef.current.commit();
+        resetBuffer();
+      }
     },
     [resetBuffer],
   );
 
-  const startQuestion = useCallback(() => {
-    resetBuffer();
-    modeRef.current = "question";
-  }, [resetBuffer]);
+  const startQuestion = useCallback(
+    (onPartial?: (text: string) => void) => {
+      resetBuffer();
+      onQuestionPartialRef.current = onPartial ?? null;
+      partialBusyRef.current = false;
+      lastPartialSamplesRef.current = 0;
+      modeRef.current = "question";
+    },
+    [resetBuffer],
+  );
 
   const finishQuestion = useCallback(async (): Promise<string> => {
     const samples = takeBuffer();
     modeRef.current = "idle";
+    onQuestionPartialRef.current = null;
     onBusyRef.current?.(true);
     try {
       const seg = await send(samples);
@@ -322,6 +579,7 @@ export function useTranscriber() {
   const cancelQuestion = useCallback(() => {
     resetBuffer();
     modeRef.current = "idle";
+    onQuestionPartialRef.current = null;
   }, [resetBuffer]);
 
   const resumeMeeting = useCallback(() => {

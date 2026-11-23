@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { orderForSession, sessionForHour, fitsSession } from "@/lib/ok-session";
 import { Briefcase, Search, Loader2, Download, Check, AlertTriangle, Trash2, Zap } from "lucide-react";
 
 interface DocumentInfo {
@@ -55,6 +56,8 @@ export function JobPicker({ documents, onChange, onJobLoaded, onUseCatalog, disa
   const [loading, setLoading] = useState(false);
   const [pullingAll, setPullingAll] = useState(false);
   const [searched, setSearched] = useState(false);
+  /** The other session's likely jobs are folded away; this opens them. */
+  const [showOther, setShowOther] = useState(false);
   const [error, setError] = useState("");
   // per-job status: "loading" | "ok" | warning message
   const [rowState, setRowState] = useState<Record<string, string>>({});
@@ -64,6 +67,20 @@ export function JobPicker({ documents, onChange, onJobLoaded, onUseCatalog, disa
   const [wiStatus, setWiStatus] = useState<Record<string, boolean>>({});
 
   const loadedNames = new Set(documents.map((d) => d.name));
+
+  // The page opens on today's list without a click. The date box defaults
+  // to today, and on a meeting day the only thing anyone wants from this
+  // page is to see today's jobs — so they are fetched as soon as the page
+  // shows, and the search button stays for any other day or a single job.
+  // The pulling itself stays a button press: the room asked for it that
+  // way, so a test can be run by hand without the page racing ahead.
+  useEffect(() => {
+    if (!searched && documents.length === 0 && !jobId.trim()) void search();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Bangkok hour → "am" | "pm": which kind of job this session usually takes first. */
+  const session = sessionForHour(Number(new Date().toLocaleTimeString("en-GB", { timeZone: "Asia/Bangkok", hour: "2-digit", hour12: false })));
 
   async function search() {
     setLoading(true);
@@ -261,14 +278,27 @@ export function JobPicker({ documents, onChange, onJobLoaded, onUseCatalog, disa
   const aeq = aeFilter.trim().toLowerCase();
   const byAe = aeq ? jobs.filter((j) => (j.ae || "").toLowerCase().includes(aeq)) : jobs;
   const confirmedCount = byAe.filter((j) => j.confirmed).length;
-  const filtered = hideConfirmed ? byAe.filter((j) => !j.confirmed) : byAe;
-  const aeGroups = new Map<string, JobRow[]>();
-  for (const j of filtered) {
-    const key = j.ae?.trim() || "(ไม่ระบุ AE)";
-    if (!aeGroups.has(key)) aeGroups.set(key, []);
-    aeGroups.get(key)!.push(j);
-  }
-  const sortedGroups = [...aeGroups.entries()].sort((a, b) => a[0].localeCompare(b[0], "th"));
+  // likely jobs for this session first — mornings reprints, afternoons new
+  const filtered = orderForSession(hideConfirmed ? byAe.filter((j) => !j.confirmed) : byAe, session);
+  // Two groups: what this session usually takes (mornings reprints,
+  // afternoons new — 3 in 4 jobs) and the rest. "ดึงทั้งหมด" pulls the first
+  // group; the second is one click away, and a job from it that gets
+  // confirmed during the meeting is pulled by the confirm mark anyway.
+  const thisRound = filtered.filter((j) => fitsSession(j.jobName, session));
+  const otherRound = filtered.filter((j) => !fitsSession(j.jobName, session));
+  const groupByAe = (rows: JobRow[]) => {
+    const m = new Map<string, JobRow[]>();
+    for (const j of rows) {
+      const key = j.ae?.trim() || "(ไม่ระบุ AE)";
+      if (!m.has(key)) m.set(key, []);
+      m.get(key)!.push(j);
+    }
+    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0], "th"));
+  };
+  const sortedGroups = groupByAe(thisRound);
+  const otherGroups = groupByAe(otherRound);
+  const roundLabel = session === "am" ? "รอบเช้า (Rep/Reprint)" : "รอบบ่าย (งานใหม่)";
+  const otherLabel = session === "am" ? "น่าจะเป็นของรอบบ่าย (งานใหม่)" : "น่าจะเป็นของรอบเช้า (Rep/Reprint)";
 
   return (
     <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-3">
@@ -364,12 +394,13 @@ export function JobPicker({ documents, onChange, onJobLoaded, onUseCatalog, disa
                 )}
                 <button
                   type="button"
-                  onClick={() => pullAllShown(filtered)}
-                  disabled={pullingAll}
+                  onClick={() => pullAllShown(thisRound)}
+                  disabled={pullingAll || thisRound.length === 0}
+                  title={`ดึง WI ของงาน${roundLabel} ทั้งหมด`}
                   className="flex items-center justify-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 px-2 py-1.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300 disabled:opacity-50"
                 >
                   {pullingAll ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
-                  {pullingAll ? "กำลังดึง..." : `ดึงทั้งหมดเลย (${filtered.length})`}
+                  {pullingAll ? "กำลังดึง..." : `ดึงทั้งหมด${roundLabel} (${thisRound.length})`}
                 </button>
               </div>
               <div className="space-y-3">
@@ -394,6 +425,40 @@ export function JobPicker({ documents, onChange, onJobLoaded, onUseCatalog, disa
                     {rows.map((job) => renderRow(job))}
                   </div>
                 ))}
+                {otherRound.length > 0 && (
+                  <div className="rounded-lg border border-dashed border-slate-300 dark:border-slate-700 p-2 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowOther((v) => !v)}
+                        className="text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-purple-700 dark:hover:text-purple-300"
+                      >
+                        {showOther ? "▾" : "▸"} อีกรอบ ({otherRound.length}) <span className="font-normal text-slate-500 dark:text-slate-400">— {otherLabel}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => pullAllShown(otherRound)}
+                        disabled={pullingAll}
+                        className="flex items-center gap-1 rounded-md border border-slate-300 dark:border-slate-600 px-2 py-1 text-[11px] text-slate-600 dark:text-slate-300 hover:border-emerald-500/60 disabled:opacity-50"
+                      >
+                        <Download className="h-3 w-3" />
+                        ดึงอีกรอบด้วย ({otherRound.length})
+                      </button>
+                    </div>
+                    {showOther && (
+                      <div className="space-y-3">
+                        {otherGroups.map(([ae, rows]) => (
+                          <div key={ae} className="space-y-1.5">
+                            <div className="text-xs font-semibold text-purple-700 dark:text-purple-300">
+                              AE: {ae} <span className="text-[11px] font-normal text-slate-500 dark:text-slate-400">({rows.length})</span>
+                            </div>
+                            {rows.map((job) => renderRow(job))}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </>
           )}

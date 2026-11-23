@@ -8,11 +8,18 @@ interface AiAvatarProps {
   speaking: boolean;
   /** The AI's audio stream — the real source of truth for motion. */
   stream?: MediaStream | null;
+  /** Display name under the avatar (e.g. "พรชัย" in persona mode). */
+  name?: string;
+  /** Face images (mouth closed / open frames) — override per assistant mode. */
+  imgClosed?: string;
+  imgOpen?: string;
+  /** "stage" = พรชัย is the hero of the meeting screen: large, no card chrome. */
+  size?: "md" | "stage";
 }
 
-// Drop these into /public. IMG_OPEN is optional (mouth-open frame for lip-sync).
-const IMG_CLOSED = "/ai-face-closed.png";
-const IMG_OPEN = "/ai-face-open.png";
+// Default frames in /public. The open frame is optional (used for lip-sync).
+const IMG_CLOSED = "/pornchai-closed.png";
+const IMG_OPEN = "/pornchai-open.png";
 
 const ACTIVE_LEVEL = 0.05; // amplitude above this = audio is actually playing
 const SILENCE_FRAMES = 45; // ~0.7s of quiet before we consider it stopped
@@ -22,12 +29,24 @@ const SILENCE_FRAMES = 45; // ~0.7s of quiet before we consider it stopped
  * runs off the audio stream itself (not the response state), so the mouth keeps
  * moving until the audio truly finishes — even after the response is "done".
  */
-export function AiAvatar({ speaking, stream }: AiAvatarProps) {
+export function AiAvatar({
+  speaking,
+  stream,
+  name = "AI",
+  imgClosed = IMG_CLOSED,
+  imgOpen = IMG_OPEN,
+  size = "md",
+}: AiAvatarProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const openRef = useRef<HTMLImageElement>(null);
   const rafRef = useRef<number | null>(null);
   const [hasImg, setHasImg] = useState(true);
   const [audioActive, setAudioActive] = useState(false);
+
+  // Switching mode switches images — give the new set a fresh chance to load.
+  useEffect(() => {
+    setHasImg(true);
+  }, [imgClosed]);
 
   useEffect(() => {
     const reset = () => {
@@ -64,9 +83,7 @@ export function AiAvatar({ speaking, stream }: AiAvatarProps) {
       const amp = Math.min(1, rms * 10);
       smooth += (amp - smooth) * 0.4;
 
-      if (wrapRef.current) {
-        wrapRef.current.style.transform = `scale(${(1 + smooth * 0.09).toFixed(3)}) translateY(${(-smooth * 3).toFixed(2)}px)`;
-      }
+      // Mouth crossfade ONLY — no scaling/bobbing/glow, per user preference.
       if (openRef.current) openRef.current.style.opacity = smooth.toFixed(2);
 
       // Track whether audio is actually playing (for the rings/label/border).
@@ -100,31 +117,26 @@ export function AiAvatar({ speaking, stream }: AiAvatarProps) {
   // "Talking" = response in progress OR audio still coming out of the speaker.
   const talking = speaking || audioActive;
 
+  const stage = size === "stage";
+  const box = stage ? "h-48 w-48 sm:h-56 sm:w-56" : "h-40 w-40";
+
   return (
     <div
-      className={`relative flex flex-col items-center justify-center gap-3 overflow-hidden rounded-2xl border-2 py-6 transition-all duration-300 ${
-        talking
-          ? "border-purple-500 bg-purple-50 dark:bg-slate-900 shadow-lg shadow-purple-500/30"
-          : "border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
-      }`}
+      className={
+        stage
+          ? "relative flex flex-col items-center justify-center gap-4 py-2"
+          : "relative flex flex-col items-center justify-center gap-3 overflow-hidden rounded-2xl border-2 border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 py-6"
+      }
     >
-      <div className="relative flex h-40 w-40 max-w-full items-center justify-center">
-        {/* pulsing rings while there is audio */}
-        {talking && (
-          <>
-            <span className="absolute inline-flex h-full w-full rounded-2xl bg-purple-400/30 animate-ping" />
-            <span
-              className="absolute inline-flex h-36 w-36 rounded-2xl bg-pink-400/30 animate-ping"
-              style={{ animationDelay: "0.4s" }}
-            />
-          </>
-        )}
-
-        {/* audio-reactive wrapper (scale + bob driven by voice) */}
+      <div className={`relative flex max-w-full items-center justify-center ${box}`}>
+        {/* Static frame — the ONLY animation is the mouth crossfade below. */}
         <div
           ref={wrapRef}
-          className="relative aspect-square h-40 w-40 overflow-hidden rounded-2xl bg-gradient-to-br from-purple-500 to-pink-500"
-          style={{ willChange: "transform", transition: "transform 40ms linear" }}
+          className={`relative aspect-square overflow-hidden bg-gradient-to-br from-purple-500 to-pink-500 ${box} ${
+            stage
+              ? `rounded-full ${talking ? "stage-halo-live" : "stage-halo"}`
+              : "rounded-2xl"
+          }`}
         >
           <div className="absolute inset-0 flex items-center justify-center">
             <Sparkles className="h-12 w-12 text-white/90" />
@@ -133,14 +145,14 @@ export function AiAvatar({ speaking, stream }: AiAvatarProps) {
           {hasImg && (
             <>
               <img
-                src={IMG_CLOSED}
+                src={imgClosed}
                 alt="AI"
                 className="absolute inset-0 h-full w-full object-cover"
                 onError={() => setHasImg(false)}
               />
               <img
                 ref={openRef}
-                src={IMG_OPEN}
+                src={imgOpen}
                 alt=""
                 aria-hidden
                 className="absolute inset-0 h-full w-full object-cover opacity-0"
@@ -152,11 +164,11 @@ export function AiAvatar({ speaking, stream }: AiAvatarProps) {
       </div>
 
       <span
-        className={`text-xs font-medium ${
-          talking ? "text-purple-600 dark:text-purple-300" : "text-slate-500 dark:text-slate-400"
+        className={`font-medium ${stage ? "text-sm" : "text-xs"} ${
+          talking ? "text-pink-600 dark:text-pink-300" : "text-slate-500 dark:text-slate-400"
         }`}
       >
-        {talking ? "AI กำลังพูด…" : "AI พร้อมช่วยประชุม"}
+        {talking ? `${name} กำลังพูด…` : `${name} พร้อมช่วยประชุม`}
       </span>
     </div>
   );

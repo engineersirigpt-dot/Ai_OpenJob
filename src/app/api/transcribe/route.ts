@@ -1,5 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { normalizeDomainTerms, externalWhitelist } from "@/lib/domain-dictionary";
+import { STT_PROMPT } from "@/lib/stt-prompt";
+import { normalizeDomainTerms } from "@/lib/domain-dictionary";
+import {
+  keepThaiOnly,
+  isForeignHallucination,
+  isHallucinatedLoop,
+  collapseRepeats,
+  stripPromptEcho,
+  isPromptEcho,
+  dropFillers,
+} from "@/lib/thai-text";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -9,10 +19,20 @@ export const maxDuration = 30;
 const TYPHOON_URL = process.env.TYPHOON_ASR_URL || "http://127.0.0.1:8020/transcribe";
 const PROVIDER = (process.env.STT_PROVIDER || "typhoon").toLowerCase();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe";
+// gpt-transcribe (July 2026) replaced gpt-4o-transcribe here after a side by
+// side on real slices from the meeting room: on 25 gate-cut slices it echoed
+// the prompt 0 times (gpt-4o-transcribe: 7), produced no foreign text, no
+// repetition loops, returned the same text on every run, and answered in a
+// third of the time. It writes "..." where it cannot hear, instead of
+// inventing. TRANSCRIBE_MODEL overrides.
+const OPENAI_MODEL = process.env.TRANSCRIBE_MODEL || "gpt-transcribe";
 // "th" = lock to Thai (safe, transliterates English). "auto" = let the model
 // detect — better for Thai/English code-switching, small risk of drifting.
 const TRANSCRIBE_LANG = (process.env.TRANSCRIBE_LANG || "th").toLowerCase();
+// The prompt is a short Thai sentence, not the vocabulary list it used to
+// be — see stt-prompt.ts for the measurement that retired the list. The echo
+// guard below still removes it when the model reads it back.
+const VOCAB_HINT = STT_PROMPT;
 
 // ---- STT quality layer (no LLM, VAD untouched) ------------------------------
 // Dictionary: deterministic domain-term normalization (on by default).
@@ -69,68 +89,6 @@ function decide(q: QualitySummary): Decision {
   return "accept";
 }
 
-/** Whisper-style hallucination loops ("ครอบครอบครอบ…") — drop them. */
-function isHallucinatedLoop(text: string): boolean {
-  const t = text.replace(/\s+/g, "");
-  if (t.length < 16) return false;
-  for (let n = 2; n <= 6; n++) {
-    const counts = new Map<string, number>();
-    for (let i = 0; i + n <= t.length; i++) {
-      const gram = t.slice(i, i + n);
-      counts.set(gram, (counts.get(gram) || 0) + 1);
-    }
-    let max = 0;
-    for (const c of counts.values()) if (c > max) max = c;
-    if (max >= 4 && (max * n) / t.length >= 0.5) return true;
-  }
-  return t.length >= 20 && new Set(t).size <= 4;
-}
-
-/**
- * On garbage audio the model sometimes emits whole sentences in another
- * language even with language:"th". A real utterance here is Thai with a few
- * English terms, so a segment with almost no Thai characters is noise.
- */
-function isForeignHallucination(text: string): boolean {
-  const letters = text.replace(/[\s\d.,!?()\-:;"'%/]+/g, "");
-  if (letters.length < 12) return false;
-  let thai = 0;
-  for (const ch of letters) {
-    if (ch >= "฀" && ch <= "๿") thai++;
-  }
-  return thai / letters.length < 0.15;
-}
-
-/**
- * Thai-only context text: every Latin word is dropped unless it's a code
- * containing digits (J82601713, L640, 3x80g) or a known print-industry term.
- * Applied to contextText only — the on-screen transcript stays raw.
- */
-const WHITELIST = new Set([
-  "ai", "car", "spot", "uv", "opp", "pp", "pe", "pet", "pvc", "matt", "matte",
-  "gloss", "waterbase", "laminate", "lamination", "die", "cut", "diecut",
-  "die-cut", "emboss", "deboss", "foil", "artwork", "wi", "ae", "ok", "okay",
-  "reprint", "proof", "pantone", "offset", "inner", "box", "display", "pack",
-  "fsc", "ld", "gsm", "job", "id", "komori", "heidelberg", "cmyk",
-  // per-deployment additions from data/stt-dictionary.json
-  ...externalWhitelist(),
-]);
-
-function keepThaiOnly(text: string): string {
-  return text
-    // CJK (Chinese/Japanese/Korean) — pure hallucination here, never whitelisted
-    .replace(/[⺀-鿿가-힯豈-﫿･-ﾟ]+/g, " ")
-    .replace(/[A-Za-zÀ-ÖØ-öø-ÿĀ-ɏḀ-ỿ][A-Za-z0-9À-ÖØ-öø-ÿĀ-ɏḀ-ỿ.'\-]*/g, (word) => {
-      if (/\d/.test(word)) return word; // job/product codes stay
-      const bare = word.toLowerCase().replace(/[.'\-]+$/g, "");
-      return WHITELIST.has(bare) ? word : " ";
-    })
-    .replace(/\s['"`]+(\s|$)/g, " ")
-    .replace(/\s+([.,!?;:])/g, "$1")
-    .replace(/\s{2,}/g, " ")
-    .trim();
-}
-
 async function viaTyphoon(file: File): Promise<SttResult | null> {
   const form = new FormData();
   form.append("file", file, file.name || "segment.wav");
@@ -152,16 +110,18 @@ async function viaTyphoon(file: File): Promise<SttResult | null> {
   }
 }
 
-async function viaOpenAI(file: File): Promise<SttResult> {
+async function viaOpenAI(file: File, hint = VOCAB_HINT): Promise<SttResult> {
   if (!OPENAI_API_KEY) return { text: "", logprobs: null };
   const form = new FormData();
   form.append("file", file, file.name || "segment.wav");
   form.append("model", OPENAI_MODEL);
   if (TRANSCRIBE_LANG && TRANSCRIBE_LANG !== "auto") form.append("language", TRANSCRIBE_LANG);
   form.append("temperature", "0");
+  if (hint) form.append("prompt", hint);
   form.append("response_format", "json");
-  // logprobs are only supported on the gpt-4o-(mini-)transcribe family.
-  const wantLogprobs = OPENAI_MODEL.startsWith("gpt-4o");
+  // logprobs: the gpt-4o-(mini-)transcribe family and gpt-transcribe return
+  // them (checked against the API); whisper-1 does not.
+  const wantLogprobs = /^gpt-(4o|transcribe)/.test(OPENAI_MODEL);
   if (wantLogprobs) form.append("include[]", "logprobs");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 25_000);
@@ -214,7 +174,25 @@ export async function POST(req: NextRequest) {
     result = (await viaTyphoon(file)) ?? (await viaOpenAI(file));
   }
 
-  const rawText = result.text.normalize("NFC").trim();
+  // Echo guard: cut out any run of the vocabulary hint the model read back at
+  // us (a near-silent slice sometimes comes back as the hint itself).
+  let rawText = stripPromptEcho(result.text.normalize("NFC"), VOCAB_HINT).trim();
+
+  // A slice that came back as nothing but the hint is asked again without it.
+  // The hint is what caused the echo, so re-asking with it changes nothing;
+  // the same audio with no prompt returns Thai. Only the OpenAI path carries a
+  // prompt at all, so only that path can echo, and only a slice that produced
+  // nothing is spent twice — a quiet slice stays one call.
+  if (!rawText && VOCAB_HINT && isPromptEcho(result.text, VOCAB_HINT)) {
+    console.warn("[transcribe] คำใบ้สะท้อนกลับ — ถอดซ้ำโดยไม่ใช้คำใบ้");
+    const plain = await viaOpenAI(file, "");
+    if (plain.text.trim()) {
+      result = plain;
+      rawText = plain.text.normalize("NFC").trim();
+    }
+  }
+  if (!rawText) return NextResponse.json({ text: "" });
+  rawText = dropFillers(rawText);
   if (!rawText) return NextResponse.json({ text: "" });
 
   // Segment-level garbage drops (both screen and context — it's pure noise).
@@ -235,7 +213,16 @@ export async function POST(req: NextRequest) {
   const norm = DICTIONARY_ENABLED
     ? normalizeDomainTerms(rawText)
     : { text: rawText, appliedRules: [] as Array<{ id: string; count: number }> };
-  const contextText = THAI_ONLY ? keepThaiOnly(norm.text) : norm.text;
+  const contextText = collapseRepeats(THAI_ONLY ? keepThaiOnly(norm.text) : norm.text);
+
+  // The on-screen transcript gets the same Thai-only scrub (codes + whitelist
+  // survive) — mixed-in foreign fragments like "Pāṇi tā nu evi." are STT
+  // hallucinations, not meeting content. Nothing readable left → drop it.
+  const displayText = collapseRepeats(THAI_ONLY ? keepThaiOnly(rawText) : rawText);
+  if (!displayText) {
+    console.warn(`[transcribe] dropped all-foreign segment: ${rawText.slice(0, 40)}…`);
+    return NextResponse.json({ text: "" });
+  }
 
   if (CONFIDENCE_MODE !== "off") {
     console.log(
@@ -254,7 +241,7 @@ export async function POST(req: NextRequest) {
   }
 
   return NextResponse.json({
-    text: rawText,
+    text: displayText,
     contextText,
     decision,
     quality,

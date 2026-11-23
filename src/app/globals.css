@@ -3,10 +3,57 @@
 /* Class-based dark mode: `dark:` utilities apply when <html> has `.dark`. */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* "Pornchai First" — one dark stage, violet light, cyan for live signals.
+   The whole app is skinned from here: every slate/purple/pink utility in the
+   components resolves to these values, so there is one place to retune. */
 @theme {
-  --color-brand: #8b5cf6;
-  --color-brand-dark: #6d28d9;
-  --color-accent: #ec4899;
+  --color-brand: #7c5cff;
+  --color-brand-dark: #5b3fd8;
+  --color-accent: #22d3ee;
+
+  /* Neutrals — true black stage; the violet lives in the accents only */
+  --color-slate-50: #f8f8f9;
+  --color-slate-100: #efeff1;
+  --color-slate-200: #e1e1e5;
+  --color-slate-300: #c5c5cb;
+  --color-slate-400: #98989f;
+  --color-slate-500: #76767d;
+  --color-slate-600: #51515a;
+  --color-slate-700: #2a2a2f;
+  --color-slate-800: #1b1b1f;
+  --color-slate-900: #111113;
+  --color-slate-950: #070708;
+
+  /* Accent — violet */
+  --color-purple-300: #cabdff;
+  --color-purple-400: #a98fff;
+  --color-purple-500: #7c5cff;
+  --color-purple-600: #6a46f2;
+  --color-purple-700: #5634d4;
+
+  /* Live signal — cyan (the pink-* slots the UI already uses for gradients) */
+  --color-pink-300: #8ceef9;
+  --color-pink-400: #4fdcef;
+  --color-pink-500: #22d3ee;
+  --color-pink-600: #0bb3cd;
+}
+
+/* The avatar is the stage light: a soft violet halo that brightens on speech */
+.stage-halo {
+  box-shadow: 0 0 60px -12px rgba(124, 92, 255, 0.55), 0 0 0 1px rgba(124, 92, 255, 0.35);
+}
+.stage-halo-live {
+  box-shadow: 0 0 90px -8px rgba(34, 211, 238, 0.6), 0 0 0 1px rgba(79, 220, 239, 0.55);
+}
+
+/* Bottom sheet (เอกสาร / ความจำ / รายละเอียด) */
+@keyframes sheet-up {
+  from { transform: translateY(14px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.sheet-up { animation: sheet-up 0.18s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .sheet-up { animation: none; }
 }
 
 html, body {

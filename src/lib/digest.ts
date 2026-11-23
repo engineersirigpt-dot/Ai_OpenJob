@@ -17,6 +17,28 @@ const DIGEST_MODEL = process.env.DIGEST_MODEL || process.env.SCORING_MODEL || "g
 const INPUT_CAP = 24000;
 
 /**
+ * General-purpose digest for arbitrary uploaded documents (พรชัย mode).
+ * CRITICAL: this must NOT use the WI (print-job) template — forcing a generic
+ * document into a job-shaped summary leaves blank fields that the realtime
+ * model then "fills in" with fabricated Job IDs/customers. Summarize only what
+ * is actually in the text.
+ */
+export async function digestGeneralDocument(fileName: string, rawText: string): Promise<string> {
+  if (!OPENAI_API_KEY || !rawText.trim()) return "";
+  const text = rawText.slice(0, INPUT_CAP);
+  const userPrompt = `ต่อไปนี้คือข้อความที่แปลงจากไฟล์เอกสาร "${fileName}" (อาจมีช่องว่าง/วรรณยุกต์เพี้ยนจากการแปลงไฟล์):
+
+${text}
+
+สรุปสาระสำคัญของเอกสารนี้เป็นภาษาไทย 5-10 ข้อ (ขึ้นต้นแต่ละข้อด้วย "- ") ตามเนื้อหาที่ปรากฏจริงเท่านั้น:
+- คงชื่อคน ชื่อบริษัท ตัวเลข วันที่ ตามที่เขียนไว้จริง ห้ามแต่งเพิ่มหรือเดาเด็ดขาด
+- ถ้าเอกสารสั้น/ข้อมูลน้อย สรุปเท่าที่มี ไม่ต้องเติมให้ครบ
+ตอบเฉพาะสรุป ไม่ต้องเกริ่นนำ ไม่ใช้ markdown อื่น`;
+
+  return callDigest(userPrompt, "คุณเป็นผู้ช่วยสรุปเอกสาร ตอบกระชับ ตรงประเด็น เป็นภาษาไทย ใช้ข้อมูลจากเอกสารเท่านั้น ห้ามแต่งเพิ่ม");
+}
+
+/**
  * Returns a compact digest, or "" on any failure (caller falls back to a
  * truncated slice of the raw content). Never throws.
  */
@@ -41,6 +63,14 @@ CAR / ปัญหาที่เคยเกิด: (สรุปหัวข�
 
 ตอบเฉพาะสรุป ไม่ต้องเกริ่นนำ ไม่ใช้ markdown ไม่ใส่ ** หรือหัวข้อใหญ่`;
 
+  return callDigest(
+    userPrompt,
+    "คุณเป็นผู้ช่วยสกัดข้อมูลสำคัญจากเอกสาร WI งานพิมพ์ ตอบกระชับ ตรงประเด็น เป็นภาษาไทย ใช้ข้อมูลจากเอกสารเท่านั้น ห้ามแต่งเพิ่ม",
+  );
+}
+
+/** Shared chat-completions call for both digest flavors. Never throws. */
+async function callDigest(userPrompt: string, systemPrompt: string): Promise<string> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30_000);
   try {
@@ -53,10 +83,7 @@ CAR / ปัญหาที่เคยเกิด: (สรุปหัวข�
       body: JSON.stringify({
         model: DIGEST_MODEL,
         messages: [
-          {
-            role: "system",
-            content: "คุณเป็นผู้ช่วยสกัดข้อมูลสำคัญจากเอกสาร WI งานพิมพ์ ตอบกระชับ ตรงประเด็น เป็นภาษาไทย ใช้ข้อมูลจากเอกสารเท่านั้น ห้ามแต่งเพิ่ม",
-          },
+          { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
         temperature: 0.2,

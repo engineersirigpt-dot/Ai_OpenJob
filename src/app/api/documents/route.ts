@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import path from "path";
 import { extractTextFromBuffer } from "@/lib/document-parser";
 import { addDocument, listDocuments, removeDocument, clearDocuments } from "@/lib/document-store";
-import { digestWiDocument } from "@/lib/digest";
+import { digestWiDocument, digestGeneralDocument } from "@/lib/digest";
 
 export const maxDuration = 60;
 
@@ -14,6 +14,8 @@ export async function GET() {
       id: d.id,
       name: d.name,
       preview: d.content.slice(0, 200),
+      // the digest, so the room can show a job's essentials beside its talk
+      summary: d.summary || "",
       uploadedAt: d.uploadedAt,
     })),
   );
@@ -29,10 +31,10 @@ export async function POST(req: NextRequest) {
     }
 
     const ext = path.extname(file.name).toLowerCase();
-    const supportedExts = [".pdf", ".docx", ".txt", ".md"];
+    const supportedExts = [".pdf", ".docx", ".xlsx", ".xls", ".txt", ".md", ".csv"];
     if (!supportedExts.includes(ext)) {
       return NextResponse.json(
-        { error: "รองรับเฉพาะ .pdf, .docx, .txt, .md" },
+        { error: "รองรับเฉพาะ .pdf, .docx, .xlsx, .txt, .md, .csv" },
         { status: 400 },
       );
     }
@@ -57,7 +59,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const summary = await digestWiDocument(file.name, content);
+    // WI-style extraction ONLY for actual job PDFs — forcing a generic document
+    // into the job template creates blank fields the AI later hallucinates into.
+    const isWi = /^J\d{8}\.pdf$/i.test(file.name);
+    const summary = isWi
+      ? await digestWiDocument(file.name, content)
+      : await digestGeneralDocument(file.name, content);
     const doc = addDocument(file.name, content, summary);
     return NextResponse.json({
       id: doc.id,

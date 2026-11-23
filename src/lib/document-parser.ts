@@ -28,11 +28,22 @@ export async function extractTextFromBuffer(
     return result.value || "";
   }
 
-  if (e === ".txt" || e === ".md") {
+  if (e === ".xlsx" || e === ".xls") {
+    const { read, utils } = await import("xlsx");
+    const wb = read(buffer, { type: "buffer" });
+    const parts: string[] = [];
+    for (const name of wb.SheetNames) {
+      const csv = utils.sheet_to_csv(wb.Sheets[name], { blankrows: false });
+      if (csv.trim()) parts.push(`### ชีต: ${name}\n${csv.trim()}`);
+    }
+    return parts.join("\n\n");
+  }
+
+  if (e === ".txt" || e === ".md" || e === ".csv") {
     return buffer.toString("utf-8");
   }
 
-  throw new Error(`ไม่รองรับไฟล์ประเภท ${ext} — รองรับเฉพาะ .pdf, .docx, .txt, .md`);
+  throw new Error(`ไม่รองรับไฟล์ประเภท ${ext} — รองรับเฉพาะ .pdf, .docx, .xlsx, .txt, .md, .csv`);
 }
 
 export async function extractTextFromFile(filePath: string): Promise<string> {
